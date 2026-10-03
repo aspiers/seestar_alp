@@ -89,6 +89,7 @@ def _build_front_test_app():
         "/{telescope_id:int}/schedule/state", front_app.ScheduleToggleResource()
     )
     app.add_route("/{telescope_id:int}/startup", front_app.StartupResource())
+    app.add_route("/{telescope_id:int}/pa_refine", front_app.BlindPolarAlignResource())
     app.add_route("/{telescope_id:int}/auth-status", front_app.AuthStatusResource())
     app.add_route(
         "/api/{telescope_id:int}/force_stop_goto", front_app.ForceStopGotoResource()
@@ -162,6 +163,7 @@ def front_sim_bridge(monkeypatch, simulator_server):
     set_stack_settings_seen = {"called": False}
     inject_eventstatus_none = {"enabled": False}
     response_delay_ms = {"value": 0}
+    startup_calls = []
 
     monkeypatch.setattr(
         Config,
@@ -249,6 +251,7 @@ def front_sim_bridge(monkeypatch, simulator_server):
         if action == "get_schedule":
             return {"ErrorNumber": 0, "Value": schedule_state}
         if action == "action_start_up_sequence":
+            startup_calls.append(parameters)
             schedule_state["state"] = "working"
             return {"ErrorNumber": 0, "Value": {"state": "working"}}
         if action == "create_schedule":
@@ -353,6 +356,7 @@ def front_sim_bridge(monkeypatch, simulator_server):
         "set_stack_settings_seen": set_stack_settings_seen,
         "inject_eventstatus_none": inject_eventstatus_none,
         "response_delay_ms": response_delay_ms,
+        "startup_calls": startup_calls,
     }
 
 
@@ -1574,3 +1578,30 @@ def test_43_scope_goto_and_pi_set_time_reject_double_nested_params(simulator_ser
     )
     assert bad_time.get("code") == 107
     assert "error" in bad_time
+
+
+def test_23_startup_one_star_polar_align_option(front_sim_bridge):
+    client = front_sim_bridge["client"]
+    resp = client.simulate_post(
+        "/1/startup",
+        json={
+            "action": "start",
+            "polar_align": "on",
+            "pa_one_star": "on",
+            "dec-offset": "3",
+        },
+    )
+    assert resp.status_code == 200
+    params = front_sim_bridge["startup_calls"][-1]
+    assert params["3ppa"] is True
+    assert params["pa_one_star"] is True
+
+
+def test_24_pa_refine_one_star_measure_reaches_simulator(front_sim_bridge):
+    resp = front_sim_bridge["client"].simulate_post(
+        "/1/pa_refine",
+        json={"action": "measure"},
+        headers={"Referer": "http://localhost:5432/1/startup"},
+    )
+    assert resp.status_code == 200
+    assert resp.json == {"ok": True, "error": ""}

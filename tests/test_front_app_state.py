@@ -3385,3 +3385,134 @@ def test_local_search_endpoint_unknown_object_is_404():
     client.app.add_route("/localsearch", front_app.GetLocalSearch())
     r = client.simulate_get("/localsearch", params={"target": "NoSuchThing12345"})
     assert r.status_code == 404
+
+
+def _pa_refine_app():
+    app = falcon.App()
+    app.add_route("/{telescope_id:int}/pa_refine", front_app.BlindPolarAlignResource())
+    return app
+
+
+def _post_pa_refine(action):
+    client = testing.TestClient(_pa_refine_app())
+    return client.simulate_post(
+        "/1/pa_refine",
+        json={"action": action},
+        headers={"Referer": "http://localhost:5432/1/startup"},
+    )
+
+
+def test_pa_refine_measure_starts_one_star_polar_align(monkeypatch):
+    calls = []
+
+    def fake_method_sync(method, telescope_id=1, **kwargs):
+        calls.append((method, telescope_id, kwargs))
+        return {"command": method, "status": "success", "result": 0}
+
+    monkeypatch.setattr(front_app, "method_sync", fake_method_sync)
+    resp = _post_pa_refine("measure")
+
+    assert resp.status_code == 200
+    assert resp.json == {"ok": True, "error": ""}
+    # get_context() makes its own method_sync calls (e.g. pi_is_verified).
+    assert [c for c in calls if c[0] == "start_polar_align"] == [
+        (
+            "start_polar_align",
+            1,
+            {"params": {"restart": True, "is_one_star": True}},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output", "expected_error"),
+    [
+        ("Offline", "Offline"),
+        ({"command": "start_polar_align", "status": "error", "result": "busy"}, "busy"),
+        (None, "No response from telescope"),
+    ],
+)
+def test_pa_refine_measure_reports_failure(monkeypatch, output, expected_error):
+    monkeypatch.setattr(front_app, "method_sync", lambda *a, **kw: output)
+    resp = _post_pa_refine("measure")
+
+    assert resp.status_code == 200
+    assert resp.json == {"ok": False, "error": expected_error}
+
+
+def test_pa_refine_data_includes_measurement_state(monkeypatch):
+    monkeypatch.setattr(
+        front_app,
+        "do_action_device",
+        lambda *a, **kw: {
+            "Value": {
+                "pa_error_az": 9999.9,
+                "pa_error_alt": 9999.9,
+                "state": "fail",
+                "error": "solve failed",
+            }
+        },
+    )
+    resp = _post_pa_refine("data")
+
+    assert resp.json == {
+        "error_az": 9999.9,
+        "error_alt": 9999.9,
+        "state": "fail",
+        "error": "solve failed",
+    }
+
+
+def test_pa_refine_data_tolerates_device_without_state(monkeypatch):
+    # Older device backends only return the two error values.
+    monkeypatch.setattr(
+        front_app,
+        "do_action_device",
+        lambda *a, **kw: {"Value": {"pa_error_az": -0.19, "pa_error_alt": 0.09}},
+    )
+    resp = _post_pa_refine("data")
+
+    assert resp.json == {
+        "error_az": -0.19,
+        "error_alt": 0.09,
+        "state": None,
+        "error": None,
+    }
+
+
+@pytest.mark.parametrize(("checked", "expected"), [(True, True), (False, None)])
+def test_startup_post_passes_one_star_option(monkeypatch, checked, expected):
+    calls = []
+    monkeypatch.setattr(
+        front_app,
+        "do_action_device",
+        lambda action, tid, params: calls.append((action, tid, params)) or {},
+    )
+    monkeypatch.setattr(
+        front_app.StartupResource, "startup", staticmethod(lambda *a: None)
+    )
+    form = {"action": "start", "polar_align": "on", "dec-offset": "3"}
+    if checked:
+        form["pa_one_star"] = "on"
+    req = type("Req", (), {"media": form})()
+
+    front_app.StartupResource().on_post(req, None, 1)
+
+    action, tid, params = calls[0]
+    assert (action, tid) == ("action_start_up_sequence", 1)
+    assert params["3ppa"] is True
+    assert params.get("pa_one_star") is expected
+
+
+def test_startup_template_has_one_star_checkbox():
+    html = front_app.fetch_template("do_startup.html").render(action="/1/startup")
+    assert 'id="pa_one_star"' in html
+    assert 'name="pa_one_star"' in html
+
+
+def test_pa_refine_template_has_one_star_measure_button():
+    html = front_app.fetch_template("pa_refine.html").render()
+    assert 'id="measure_btn"' in html
+    assert "Measure (one-star)" in html
+    assert 'action: "measure"' in html
+    assert 'id="pa_status"' in html

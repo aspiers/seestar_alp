@@ -4930,6 +4930,7 @@ class StartupResource(BaseResource):
             auto_focus = form.get("auto_focus", "False").strip() == "on"
             dark_frames = form.get("dark_frames", "False").strip() == "on"
             polar_align = form.get("polar_align", "False").strip() == "on"
+            pa_one_star = form.get("pa_one_star", "False").strip() == "on"
             dec_pos_index = form.get("dec-offset", Config.dec_pos_index)
 
             params = {
@@ -4938,6 +4939,8 @@ class StartupResource(BaseResource):
                 "3ppa": polar_align,
                 "dec_pos_index": int(dec_pos_index),
             }
+            if pa_one_star:
+                params["pa_one_star"] = True
 
             if lat and long:
                 params["lat"] = float(lat)
@@ -5567,6 +5570,25 @@ class BlindPolarAlignResource:
             resp.status = falcon.HTTP_200
             resp.content_type = "application/json"
             resp.text = json.dumps(value)
+        elif action == "measure":
+            # One-star solves where the scope already points, so it works when
+            # the 3-point routine's meridian slew would hit an obstruction.
+            output = method_sync(
+                "start_polar_align",
+                telescope_id,
+                params={"restart": True, "is_one_star": True},
+            )
+            # method_sync returns a status dict, or a bare string such as "Offline".
+            ok = isinstance(output, dict) and output.get("status") == "success"
+            if ok:
+                error = ""
+            elif isinstance(output, dict):
+                error = str(output.get("result"))
+            else:
+                error = str(output or "No response from telescope")
+            resp.status = falcon.HTTP_200
+            resp.content_type = "application/json"
+            resp.text = json.dumps({"ok": ok, "error": error})
         elif action == "data":
             result = do_action_device("get_pa_error", telescope_id, {})
             if result is not None:
@@ -5574,6 +5596,8 @@ class BlindPolarAlignResource:
                 pa_data = {
                     "error_az": value["pa_error_az"],
                     "error_alt": value["pa_error_alt"],
+                    "state": value.get("state"),
+                    "error": value.get("error"),
                 }
                 resp.status = falcon.HTTP_200
                 resp.content_type = "application/json"

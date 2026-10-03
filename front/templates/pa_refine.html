@@ -1,6 +1,7 @@
 <div class="container mt-3">
   <p id="alt_err">Alt Error (Degrees): </p>
   <p id="az_err">Az Error (Degrees): </p>
+  <p id="pa_status" class="text-muted"></p>
 </div>
 
 <div class="slide-container">
@@ -121,6 +122,8 @@
 <!-- <form method="post" action="{{ action }}" class="d-inline"> -->
 <div>
 		<button id="start_stop_btn" class="btn btn-primary btn-lg" type="button">Start</button>
+		<button id="measure_btn" class="btn btn-secondary btn-lg ms-2" type="button"
+		        title="Run a fresh one-star polar alignment measurement from the current pointing (EQ mode only)">Measure (one-star)</button>
 </div>
 <!-- </form> -->
 
@@ -134,6 +137,10 @@
 				Wait for the dot to move between adjustments</li>
 			<li>Once you're happy with the offset values, press the stop button</li>
 		</ol>
+		If the sky the polar alignment slews to is blocked, point the scope at any clear patch of sky
+		and press <b>Measure (one-star)</b> instead. It plate solves where the scope already points.
+		The live readout after a measurement comes from the gyro and drifts over a few minutes,
+		so press Measure again to confirm your final adjustment with a fresh plate solve.
 	</div>
 </div>
 <script>
@@ -152,8 +159,13 @@
   const baseURL = `${window.location.protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}`;
   const get_pa_refine_URL = baseURL + '{{ root_path }}/pa_refine';
 
+  const measureButton = document.getElementById("measure_btn");
+  const pa_status = document.getElementById("pa_status")
+  // get_pa_error reports this sentinel while no measurement result exists.
+  const PA_ERROR_UNKNOWN = 9999.9
+
   startStopButton.textContent = "Start"
-  var pa_interval
+  var pa_interval = null
 
   function update_alignment(error_alt, error_az, max) {
     let x,y;
@@ -186,6 +198,16 @@
     az_err.textContent =  `Az  Error (deg): ${error_az.toFixed(3)}`
   }
 
+  function update_status(state, error) {
+    if (state === "working") {
+      pa_status.textContent = "Measuring..."
+    } else if (state === "fail" || state === "cancel") {
+      pa_status.textContent = error ? `Measurement ${state}: ${error}` : `Measurement ${state}`
+    } else {
+      pa_status.textContent = ""
+    }
+  }
+
   async function update_pa_error() {
     response = await fetch(get_pa_refine_URL, {
           method: "POST",
@@ -197,7 +219,26 @@
           }
         })
         data = await response.json();
+        update_status(data["state"], data["error"]);
+        if (data["error_alt"] >= PA_ERROR_UNKNOWN || data["error_az"] >= PA_ERROR_UNKNOWN) {
+          alt_err.textContent = "Alt Error (deg): -"
+          az_err.textContent = "Az  Error (deg): -"
+          return
+        }
         update_alignment(data["error_alt"], data["error_az"], err_slider.value*0.1 );
+  }
+
+  function start_polling() {
+    if (pa_interval === null) {
+      pa_interval = setInterval(update_pa_error, 1000);
+    }
+    startStopButton.textContent = "Stop";
+  }
+
+  function stop_polling() {
+    clearInterval(pa_interval);
+    pa_interval = null;
+    startStopButton.textContent = "Start";
   }
 
   async function startAlignment() {
@@ -215,8 +256,7 @@
       data = await response.json();
 
       if (data["ok"]) {
-        pa_interval = setInterval(update_pa_error, 1000);
-        startStopButton.textContent = "Stop";
+        start_polling();
       }
       else {
         alert(data["error"])
@@ -241,14 +281,37 @@
         }
       })
       var data = await response.json();
-      startStopButton.textContent = "Start";
-      clearInterval(pa_interval);
+      stop_polling();
 
     } catch (error) {
-      startStopButton.textContent = "Start";
+      stop_polling();
       console.error('Error fetching data:', error);
-      clearInterval(pa_interval);
       alert('Error fetching data:', error)
+    }
+  }
+
+  async function measureOneStar() {
+    try {
+      var response = await fetch(get_pa_refine_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "measure"
+        }),
+        headers: {
+          "Content-type": "application/json; charset=UTF-8"
+        }
+      })
+      var data = await response.json();
+      if (data["ok"]) {
+        pa_status.textContent = "Measuring..."
+        start_polling();
+      }
+      else {
+        pa_status.textContent = `Could not start measurement: ${data["error"]}`
+      }
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      pa_status.textContent = 'Could not start measurement'
     }
   }
 
@@ -264,4 +327,5 @@
 
 
   startStopButton.addEventListener("click", toggleStateAlignment);
+  measureButton.addEventListener("click", measureOneStar);
 </script>

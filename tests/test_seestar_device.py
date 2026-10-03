@@ -348,14 +348,35 @@ def test_get_pa_error_defaults_when_unknown(seestar):
     seestar.cur_pa_error_x = None
     seestar.cur_pa_error_y = None
     out = seestar.get_pa_error({})
-    assert out == {"pa_error_alt": 9999.9, "pa_error_az": 9999.9}
+    assert out == {
+        "pa_error_alt": 9999.9,
+        "pa_error_az": 9999.9,
+        "state": None,
+        "error": None,
+    }
 
 
 def test_get_pa_error_returns_current_values(seestar):
     seestar.cur_pa_error_x = 1.23
     seestar.cur_pa_error_y = 4.56
     out = seestar.get_pa_error({})
-    assert out == {"pa_error_alt": 4.56, "pa_error_az": 1.23}
+    assert out["pa_error_alt"] == 4.56
+    assert out["pa_error_az"] == 1.23
+
+
+def test_get_pa_error_reports_failed_measurement(seestar):
+    seestar.cur_pa_error_x = None
+    seestar.cur_pa_error_y = None
+    seestar.event_state["EqModePA"] = {
+        "Event": "EqModePA",
+        "state": "fail",
+        "error": "solve failed",
+        "code": 251,
+    }
+    out = seestar.get_pa_error({})
+    assert out["pa_error_alt"] == 9999.9
+    assert out["state"] == "fail"
+    assert out["error"] == "solve failed"
 
 
 class _DummySocket:
@@ -2835,6 +2856,67 @@ def test_start_up_thread_full_sequence(monkeypatch, seestar):
         }
     )
     assert seestar.schedule["state"] == "complete"
+
+
+def _run_start_up_with_pa(monkeypatch, seestar, extra_params):
+    """Run the start-up sequence in EQ mode and return the PA payloads sent."""
+    monkeypatch.setattr("device.seestar_device.time.sleep", lambda _s: None)
+    monkeypatch.setattr(
+        "device.seestar_device.tzlocal.get_localzone_name", lambda: "UTC"
+    )
+    import datetime as _dt
+
+    monkeypatch.setattr(
+        "device.seestar_device.tzlocal.get_localzone", lambda: _dt.timezone.utc
+    )
+    monkeypatch.setattr("device.seestar_device.EarthLocation", lambda **_k: object())
+    monkeypatch.setattr(seestar, "play_sound", lambda _sid: None)
+    monkeypatch.setattr(seestar, "set_setting", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(seestar, "mark_op_state", lambda *a, **k: None)
+    monkeypatch.setattr(seestar, "wait_end_op", lambda _e: True)
+    pa_payloads = []
+
+    def fake_sync(payload):
+        if payload["method"] == "get_device_state":
+            reply = {
+                "result": {
+                    "device": {"firmware_ver_int": 2931},
+                    "mount": {"equ_mode": True},
+                }
+            }
+            # The receive thread, not running here, caches EQ mode from it.
+            seestar._update_eq_mode_from_device_state(reply)
+            return reply
+        if payload["method"] == "start_polar_align":
+            pa_payloads.append(payload)
+        return {"result": "ok"}
+
+    monkeypatch.setattr(seestar, "send_message_param_sync", fake_sync)
+    seestar.schedule["state"] = "stopped"
+    seestar.start_up_thread_fn(
+        {"lat": 1.1, "lon": 2.2, "3ppa": True, "dec_pos_index": 2, **extra_params}
+    )
+    return pa_payloads
+
+
+def test_start_up_one_star_sends_is_one_star(monkeypatch, seestar):
+    payloads = _run_start_up_with_pa(monkeypatch, seestar, {"pa_one_star": True})
+    assert payloads == [
+        {
+            "method": "start_polar_align",
+            "params": {"restart": True, "dec_pos_index": 2, "is_one_star": True},
+        }
+    ]
+
+
+def test_start_up_default_polar_align_stays_three_point(monkeypatch, seestar):
+    payloads = _run_start_up_with_pa(monkeypatch, seestar, {})
+    assert payloads == [
+        {
+            "method": "start_polar_align",
+            "params": {"restart": True, "dec_pos_index": 2},
+        }
+    ]
 
 
 def test_schedule_crud_import_export_and_shortcuts(monkeypatch, seestar, tmp_path):

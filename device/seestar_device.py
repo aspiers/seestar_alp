@@ -1345,13 +1345,20 @@ class Seestar:
         self.update_scheduler_state_obj(item_state)
 
     def get_pa_error(self, param):
+        with self.event_state_lock:
+            pa_event = dict(self.event_state.get("EqModePA") or {})
         if self.cur_pa_error_x is None or self.cur_pa_error_y is None:
-            return {"pa_error_alt": 9999.9, "pa_error_az": 9999.9}
+            result = {"pa_error_alt": 9999.9, "pa_error_az": 9999.9}
         else:
-            return {
+            result = {
                 "pa_error_alt": self.cur_pa_error_y,
                 "pa_error_az": self.cur_pa_error_x,
             }
+        # Lets the PA refinement UI show a measurement in progress or a failed
+        # plate solve instead of only the 9999.9 "unknown" sentinel.
+        result["state"] = pa_event.get("state")
+        result["error"] = pa_event.get("error")
+        return result
 
     def set_setting(
         self,
@@ -1901,6 +1908,7 @@ class Seestar:
 
             do_AF = params.get("auto_focus", False)
             do_3PPA = params.get("3ppa", False)
+            pa_one_star = params.get("pa_one_star", False)
             do_dark_frames = params.get("dark_frames", False)
             dec_pos_index = params.get("dec_pos_index", Config.dec_pos_index)
 
@@ -2031,14 +2039,17 @@ class Seestar:
 
             if do_3PPA:
                 msg = "perform PA Alignment"
+                pa_params = {"restart": True, "dec_pos_index": dec_pos_index}
+                if pa_one_star:
+                    # One-star mode solves wherever the scope already points,
+                    # instead of first slewing to the meridian like 3-point.
+                    msg += " (one-star)"
+                    pa_params["is_one_star"] = True
                 self.event_state["scheduler"]["cur_scheduler_item"]["action"] = msg
                 self.logger.info(msg)
                 time.sleep(1.0)
                 response = self.send_message_param_sync(
-                    {
-                        "method": "start_polar_align",
-                        "params": {"restart": True, "dec_pos_index": dec_pos_index},
-                    }
+                    {"method": "start_polar_align", "params": pa_params}
                 )
 
                 self.mark_op_state("EqModePA", "working")
