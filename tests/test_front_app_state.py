@@ -2512,9 +2512,22 @@ def _live_wide_cam_app():
     return app
 
 
+def _fake_wide_cam_device(monkeypatch, model, **capabilities):
+    """Make get_device_state report the given model and capability flags."""
+    device = {"product_model": model, **capabilities}
+    monkeypatch.setattr(front_app, "check_api_state", lambda _tid: True)
+    monkeypatch.setattr(
+        front_app,
+        "method_sync",
+        lambda method, *_a, **_kw: (
+            {"device": device} if method == "get_device_state" else None
+        ),
+    )
+
+
 def test_live_wide_cam_get_returns_204_for_non_s30(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S50")
+    _fake_wide_cam_device(monkeypatch, "Seestar S50")
     client = testing.TestClient(_live_wide_cam_app())
     resp = client.simulate_get("/1/live/wide-cam")
     assert resp.status_code == 204
@@ -2523,7 +2536,7 @@ def test_live_wide_cam_get_returns_204_for_non_s30(monkeypatch):
 
 def test_live_wide_cam_get_returns_204_when_experimental_off(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", False)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    _fake_wide_cam_device(monkeypatch, "Seestar S30")
     client = testing.TestClient(_live_wide_cam_app())
     resp = client.simulate_get("/1/live/wide-cam")
     assert resp.status_code == 204
@@ -2531,7 +2544,7 @@ def test_live_wide_cam_get_returns_204_when_experimental_off(monkeypatch):
 
 def test_live_wide_cam_get_returns_toggle_for_s30(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    _fake_wide_cam_device(monkeypatch, "Seestar S30")
     monkeypatch.setattr(
         front_app,
         "do_action_device",
@@ -2546,7 +2559,7 @@ def test_live_wide_cam_get_returns_toggle_for_s30(monkeypatch):
 
 def test_live_wide_cam_get_shows_checked_when_enabled(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30 Pro")
+    _fake_wide_cam_device(monkeypatch, "Seestar S30 Pro")
     monkeypatch.setattr(
         front_app,
         "do_action_device",
@@ -2562,7 +2575,7 @@ def test_live_wide_cam_get_shows_checked_when_enabled(monkeypatch):
 
 def test_live_wide_cam_post_sets_true(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    _fake_wide_cam_device(monkeypatch, "Seestar S30")
     calls = []
     monkeypatch.setattr(
         front_app,
@@ -2582,7 +2595,7 @@ def test_live_wide_cam_post_sets_true(monkeypatch):
 
 def test_live_wide_cam_post_sets_false(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S30")
+    _fake_wide_cam_device(monkeypatch, "Seestar S30")
     calls = []
     monkeypatch.setattr(
         front_app,
@@ -2617,7 +2630,7 @@ def test_live_wide_cam_post_returns_204_when_experimental_off(monkeypatch):
 
 def test_live_wide_cam_post_returns_204_for_non_s30(monkeypatch):
     monkeypatch.setattr(front_app.Config, "experimental", True)
-    monkeypatch.setattr(front_app, "get_device_model", lambda _tid: "Seestar S50")
+    _fake_wide_cam_device(monkeypatch, "Seestar S50")
     calls = []
     monkeypatch.setattr(
         front_app,
@@ -2629,6 +2642,94 @@ def test_live_wide_cam_post_returns_204_for_non_s30(monkeypatch):
     assert resp.status_code == 204
     assert resp.headers.get("hx-reswap") == "none"
     assert calls == []
+
+
+def test_get_wide_cam_mode_prefers_capability_flag(monkeypatch):
+    _fake_wide_cam_device(monkeypatch, "Seestar S50 Pro", can_star_mode_sel_cam=True)
+    assert front_app.get_wide_cam_mode(1) == front_app.WIDE_CAM_SELECTED_CAM
+
+
+@pytest.mark.parametrize("model", ["Seestar S30", "Seestar S30P", "Seestar S50P"])
+def test_get_wide_cam_mode_keeps_legacy_path_without_flag(monkeypatch, model):
+    _fake_wide_cam_device(monkeypatch, model)
+    assert front_app.get_wide_cam_mode(1) == front_app.WIDE_CAM_LEGACY
+
+
+def test_get_wide_cam_mode_none_for_offline_or_unsupported(monkeypatch):
+    _fake_wide_cam_device(monkeypatch, "Seestar S50")
+    assert front_app.get_wide_cam_mode(1) is None
+    monkeypatch.setattr(front_app, "check_api_state", lambda _tid: False)
+    assert front_app.get_wide_cam_mode(1) is None
+
+
+@pytest.mark.parametrize(
+    ("selected_cam", "expect_checked"), [("SecondView", True), ("View", False)]
+)
+def test_live_wide_cam_get_reads_selected_camera_event(
+    monkeypatch, selected_cam, expect_checked
+):
+    monkeypatch.setattr(front_app.Config, "experimental", True)
+    _fake_wide_cam_device(monkeypatch, "Seestar S50 Pro", can_star_mode_sel_cam=True)
+    calls = []
+
+    def fake_do_action_device(action, tid, params):
+        calls.append((action, params))
+        if action == "get_event_state":
+            return {
+                "Value": {
+                    "result": {"Event": "SelectCamera", "selected_cam": selected_cam}
+                }
+            }
+        return {"Value": {"result": {"wide_cam": not expect_checked}}}
+
+    monkeypatch.setattr(front_app, "do_action_device", fake_do_action_device)
+    resp = testing.TestClient(_live_wide_cam_app()).simulate_get("/1/live/wide-cam")
+
+    assert resp.status_code == 200
+    # "checked" also appears once in hx-vals; a second hit is the attribute.
+    assert (resp.text.count("checked") >= 2) is expect_checked
+    # The SelectCamera event is authoritative; get_setting is not consulted.
+    assert [a for a, _p in calls] == ["get_event_state"]
+
+
+def test_live_wide_cam_get_falls_back_to_setting_without_event(monkeypatch):
+    monkeypatch.setattr(front_app.Config, "experimental", True)
+    _fake_wide_cam_device(monkeypatch, "Seestar S50 Pro", can_star_mode_sel_cam=True)
+
+    def fake_do_action_device(action, tid, params):
+        if action == "get_event_state":
+            return {"Value": {"result": {}}}
+        return {"Value": {"result": {"wide_cam": True}}}
+
+    monkeypatch.setattr(front_app, "do_action_device", fake_do_action_device)
+    resp = testing.TestClient(_live_wide_cam_app()).simulate_get("/1/live/wide-cam")
+
+    assert resp.status_code == 200
+    assert resp.text.count("checked") >= 2
+
+
+@pytest.mark.parametrize(
+    ("toggle", "expected"),
+    [
+        ("true", {"wide_cam": True, "selected_cam": "SecondView"}),
+        ("false", {"wide_cam": False, "selected_cam": "View"}),
+    ],
+)
+def test_live_wide_cam_post_selects_camera_by_name(monkeypatch, toggle, expected):
+    monkeypatch.setattr(front_app.Config, "experimental", True)
+    _fake_wide_cam_device(monkeypatch, "Seestar S50 Pro", can_star_mode_sel_cam=True)
+    calls = []
+    monkeypatch.setattr(
+        front_app,
+        "do_action_device",
+        lambda action, tid, params: calls.append((action, params)) or {},
+    )
+    resp = testing.TestClient(_live_wide_cam_app()).simulate_post(
+        "/1/live/wide-cam", json={"wide_cam": toggle}
+    )
+
+    assert resp.status_code == 200
+    assert calls == [("method_sync", {"method": "set_setting", "params": expected})]
 
 
 def test_force_stop_goto_endpoint_returns_json(monkeypatch):

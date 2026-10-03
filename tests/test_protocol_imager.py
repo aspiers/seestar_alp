@@ -243,3 +243,58 @@ def test_convert_star_image_rgb_and_bayer_and_invalid(monkeypatch):
 
     invalid = proto.convert_star_image(b"123", 2, 2)
     assert invalid is None
+
+
+def test_set_rtsp_port_defaults_to_main_camera(monkeypatch):
+    proto = make_protocol(monkeypatch)
+    assert proto.rtsp_port == 4554
+
+    proto.set_rtsp_port(4555)
+
+    assert proto.rtsp_port == 4555
+    assert ("info", "RTSP stream source changing to port 4555") in proto.logger.records
+
+
+class _FakeRtspClient:
+    """Records the stream URI; selects the wide camera on its first read."""
+
+    uris = []
+
+    def __init__(self, rtsp_server_uri, logger, verbose=False):
+        self.uris.append(rtsp_server_uri)
+        self.proto = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def isOpened(self):
+        return True
+
+    def read(self, raw=True):
+        self.proto.set_rtsp_port(4555)
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+
+def test_streaming_loop_reconnects_when_camera_changes(monkeypatch):
+    proto = make_protocol(monkeypatch)
+    monkeypatch.setattr(proto, "is_streaming", lambda: True)
+    monkeypatch.setattr("device.protocols.imager.sleep", lambda _s: None)
+    _FakeRtspClient.uris = []
+
+    def make_client(**kwargs):
+        client = _FakeRtspClient(**kwargs)
+        client.proto = proto
+        return client
+
+    monkeypatch.setattr("device.protocols.imager.RtspClient", make_client)
+
+    # The port change during the first session ends it; the next one uses it.
+    assert proto._run_streaming_loop() is True
+    assert proto._run_streaming_loop() is True
+    assert _FakeRtspClient.uris == [
+        "rtsp://127.0.0.1:4554/stream",
+        "rtsp://127.0.0.1:4555/stream",
+    ]

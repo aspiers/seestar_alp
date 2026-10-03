@@ -74,6 +74,7 @@ def _build_front_test_app():
     app.add_route("/{telescope_id:int}/guestmode", front_app.GuestModeResource())
     app.add_route("/{telescope_id:int}/live", front_app.LivePage())
     app.add_route("/{telescope_id:int}/live/{mode}", front_app.LivePage())
+    app.add_route("/{telescope_id:int}/live/wide-cam", front_app.LiveWideCamResource())
     app.add_route("/{telescope_id:int}/planning", front_app.PlanningResource())
     app.add_route("/{telescope_id:int}/config", front_app.ConfigResource())
     app.add_route("/{telescope_id:int}/platform-rpi", front_app.PlatformRpiResource())
@@ -666,6 +667,14 @@ def test_06d_horizon_page_profile_reaches_the_planner(
     assert 'href="/1/horizon">Make the horizon from a 360&deg; panorama</a>' in (
         resp.text
     )
+
+
+def test_06_live_wide_cam_toggle_hidden_without_wide_camera(front_sim_bridge):
+    # The simulator reports a plain S50 with can_star_mode_sel_cam false, so
+    # the capability gate must hide the toggle even with experimental on.
+    resp = front_sim_bridge["client"].simulate_get("/1/live/wide-cam")
+    assert resp.status_code == 204
+    assert resp.headers.get("hx-reswap") == "none"
 
 
 def test_07_schedule_lifecycle(front_sim_bridge):

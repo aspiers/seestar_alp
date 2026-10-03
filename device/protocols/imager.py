@@ -22,6 +22,12 @@ ExposureModes = Enum("ExposureModes", ["stream", "preview", "stacking"])
 # todo : make saving code some kind of listener?
 
 
+# RTSP ports served by the scope: the main (telephoto) camera, and the
+# wide-angle camera on models that have one (verified on S50 Pro firmware 9.31).
+MAIN_CAMERA_RTSP_PORT = 4554
+WIDE_CAMERA_RTSP_PORT = 4555
+
+
 class SeestarImagerProtocol(SeestarBinaryProtocol):
     def __init__(self, logger, device_name, device_num, host, port):
         super().__init__(logger, device_name, device_num, host, port)
@@ -29,6 +35,7 @@ class SeestarImagerProtocol(SeestarBinaryProtocol):
         self.receiving_thread = None
         self.streaming_thread = None
         self.exposure_mode: Optional[ExposureModes] = None
+        self.rtsp_port = MAIN_CAMERA_RTSP_PORT
         self._received_frame = 0
         self.raw_img = None
         self.raw_img_size: Tuple[Optional[int], Optional[int]] = [None, None]
@@ -112,6 +119,12 @@ class SeestarImagerProtocol(SeestarBinaryProtocol):
                 else:
                     self.stop_preview()
             self.exposure_mode = exposure_mode
+
+    def set_rtsp_port(self, port: int) -> None:
+        """Switch the RTSP stream source; an open stream reconnects to it."""
+        if port != self.rtsp_port:
+            self.logger.info(f"RTSP stream source changing to port {port}")
+            self.rtsp_port = port
 
     def get_image(self) -> Tuple[Optional[np.ndarray], Optional[int], Optional[int]]:
         with self.lock:
@@ -231,8 +244,9 @@ class SeestarImagerProtocol(SeestarBinaryProtocol):
         """
         try:
             empty_images = 0
+            port = self.rtsp_port
             with RtspClient(
-                rtsp_server_uri=f"rtsp://{self.host}:4554/stream",
+                rtsp_server_uri=f"rtsp://{self.host}:{port}/stream",
                 logger=self.logger,
                 verbose=True,
             ) as client:
@@ -242,7 +256,9 @@ class SeestarImagerProtocol(SeestarBinaryProtocol):
                 # self.raw_img = np.copy(client.read(raw=True))
                 # self.received_frame += 1
 
-                while self.is_streaming():
+                # Leaving the loop on a port change makes the caller reconnect
+                # to the newly selected camera.
+                while self.is_streaming() and port == self.rtsp_port:
                     image = client.read(raw=True)
                     with self.lock:
                         if image is not None and not np.array_equal(

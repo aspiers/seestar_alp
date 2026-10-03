@@ -55,6 +55,7 @@ class FakeComm:
         self.exposure_mode = None
         self.set_modes = []
         self.sent = []
+        self.rtsp_ports = []
         self._streaming = False
         self.StarProcessors = []
         self.on_stack_image = None
@@ -72,6 +73,9 @@ class FakeComm:
     def set_exposure_mode(self, mode):
         self.exposure_mode = mode
         self.set_modes.append(mode)
+
+    def set_rtsp_port(self, port):
+        self.rtsp_ports.append(port)
 
     def get_image(self):
         return np.ones((2, 2, 3), dtype=np.uint8), 2, 2
@@ -964,3 +968,13 @@ def test_get_frame_handles_encode_exception_and_loading(monkeypatch):
     )
     monkeypatch.setattr(seestar_imaging.SNRAnalysis, "analyze", lambda self, _img: 3)
     list(imager.get_frame())
+
+
+def test_event_handler_select_camera_switches_rtsp_port(monkeypatch):
+    imager = make_imager(monkeypatch)
+
+    imager.event_handler({"Event": "SelectCamera", "selected_cam": "SecondView"})
+    imager.event_handler({"Event": "SelectCamera", "selected_cam": "View"})
+    imager.event_handler({"Event": "SelectCamera"})
+
+    assert imager.comm.rtsp_ports == [4555, 4554, 4554]

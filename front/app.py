@@ -1052,6 +1052,29 @@ def get_device_model(telescope_id):
     return 0
 
 
+# How a telescope switches to its wide-angle camera.
+WIDE_CAM_SELECTED_CAM = "selected_cam"  # set_setting selected_cam, e.g. S50 Pro
+WIDE_CAM_LEGACY = "wide_cam"  # set_setting wide_cam, original S30 support
+
+
+def get_wide_cam_mode(telescope_id):
+    """Return the wide-camera switching mode for a telescope, or None.
+
+    Prefer the firmware's capability flag over model names: firmware that
+    reports can_star_mode_sel_cam (seen on the S50 Pro, firmware 9.31) picks
+    cameras with the selected_cam setting and ignores wide_cam. Other
+    models with a wide camera keep the original wide_cam path.
+    """
+    if not check_api_state(telescope_id):
+        return None
+    state = _device_state_sections(telescope_id, "device")
+    if pydash.get(state, "device.can_star_mode_sel_cam"):
+        return WIDE_CAM_SELECTED_CAM
+    if has_wide_camera(pydash.get(state, "device.product_model")):
+        return WIDE_CAM_LEGACY
+    return None
+
+
 def get_guestmode_state(telescope_id):
     state = {}
     if check_api_state(telescope_id):
@@ -4022,19 +4045,35 @@ class LiveVideoResource(BaseResource):
 
 class LiveWideCamResource:
     def on_get(self, req, resp, telescope_id: int = 1):
-        if not Config.experimental:
+        mode = get_wide_cam_mode(telescope_id) if Config.experimental else None
+        if not mode:
             resp.set_header("HX-Reswap", "none")
             resp.status = falcon.HTTP_204
             return
-        model = get_device_model(telescope_id)
-        if not has_wide_camera(model):
-            resp.set_header("HX-Reswap", "none")
-            resp.status = falcon.HTTP_204
-            return
-        output = do_action_device(
-            "method_sync", telescope_id, {"method": "get_setting"}
+        render_fragment(
+            req,
+            resp,
+            "partials/live_controls_wide_cam.html",
+            wide_cam=self._is_wide_cam_on(telescope_id, mode),
+            root=f"/{telescope_id}",
         )
-        wide_cam = bool(pydash.get(output, "Value.result.wide_cam", False))
+
+    def on_post(self, req, resp, telescope_id: int = 1):
+        mode = get_wide_cam_mode(telescope_id) if Config.experimental else None
+        if not mode:
+            resp.set_header("HX-Reswap", "none")
+            resp.status = falcon.HTTP_204
+            return
+        wide_cam = req.media.get("wide_cam") == "true"
+        params = {"wide_cam": wide_cam}
+        if mode == WIDE_CAM_SELECTED_CAM:
+            # Keep wide_cam alongside for firmware that still honours it.
+            params["selected_cam"] = "SecondView" if wide_cam else "View"
+        do_action_device(
+            "method_sync",
+            telescope_id,
+            {"method": "set_setting", "params": params},
+        )
         render_fragment(
             req,
             resp,
@@ -4043,29 +4082,21 @@ class LiveWideCamResource:
             root=f"/{telescope_id}",
         )
 
-    def on_post(self, req, resp, telescope_id: int = 1):
-        if not Config.experimental:
-            resp.set_header("HX-Reswap", "none")
-            resp.status = falcon.HTTP_204
-            return
-        model = get_device_model(telescope_id)
-        if not has_wide_camera(model):
-            resp.set_header("HX-Reswap", "none")
-            resp.status = falcon.HTTP_204
-            return
-        wide_cam = req.media.get("wide_cam") == "true"
-        do_action_device(
-            "method_sync",
-            telescope_id,
-            {"method": "set_setting", "params": {"wide_cam": wide_cam}},
+    @staticmethod
+    def _is_wide_cam_on(telescope_id, mode):
+        if mode == WIDE_CAM_SELECTED_CAM:
+            # get_setting does not report selected_cam; the firmware announces
+            # each change in a SelectCamera event instead.
+            event = do_action_device(
+                "get_event_state", telescope_id, {"event_name": "SelectCamera"}
+            )
+            selected = pydash.get(event, "Value.result.selected_cam")
+            if selected:
+                return selected == "SecondView"
+        output = do_action_device(
+            "method_sync", telescope_id, {"method": "get_setting"}
         )
-        render_fragment(
-            req,
-            resp,
-            "partials/live_controls_wide_cam.html",
-            wide_cam=wide_cam,
-            root=f"/{telescope_id}",
-        )
+        return bool(pydash.get(output, "Value.result.wide_cam", False))
 
 
 class LiveFocusResource(BaseResource):

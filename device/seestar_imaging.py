@@ -24,7 +24,12 @@ import sys
 
 from device import log
 from device.analysis.snr_analysis import SNRAnalysis
-from device.protocols.imager import SeestarImagerProtocol, ExposureModes
+from device.protocols.imager import (
+    MAIN_CAMERA_RTSP_PORT,
+    WIDE_CAMERA_RTSP_PORT,
+    ExposureModes,
+    SeestarImagerProtocol,
+)
 from device.config import Config
 
 
@@ -210,6 +215,15 @@ class SeestarImaging:
                         )  # xxx trace
                         # If we get a stack event, we're going to assume we're stacking!
                         self.request_stacked_image()
+                case "SelectCamera":
+                    # Firmware that selects cameras by name ("View" is the
+                    # main camera, "SecondView" the wide-angle one) streams
+                    # the wide camera on its own RTSP port.
+                    self.comm.set_rtsp_port(
+                        WIDE_CAMERA_RTSP_PORT
+                        if event.get("selected_cam") == "SecondView"
+                        else MAIN_CAMERA_RTSP_PORT
+                    )
                 case _:
                     pass
         except:
